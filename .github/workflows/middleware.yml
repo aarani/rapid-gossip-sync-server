@@ -1,0 +1,61 @@
+name: CI
+
+on: [push, pull_request]
+
+jobs:
+  build-linux:
+    name: Build Backend & Publish (Linux)
+    runs-on: ubuntu-22.04
+    container:
+      image: "ubuntu:22.04"
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      # beware about using v2 because https://github.com/actions/checkout/issues/100
+      - uses: actions/checkout@v1
+        with:
+          submodules: recursive
+      - name: Install .NET6
+        run: |
+          apt update && apt install --yes sudo
+          sudo apt install --yes curl dotnet6
+      - name: Build middleware
+        run: |
+          dotnet restore RgsToElectrumServerMiddleware/RgsToElectrumServerMiddleware.fsproj
+          dotnet build RgsToElectrumServerMiddleware/RgsToElectrumServerMiddleware.fsproj
+      - name: Publish for linux
+        run: |
+          mkdir publish
+          # Create a platform-specific self-contained executable (no need to install .NET runtime on the target machine)
+          # More info: https://docs.microsoft.com/en-us/dotnet/core/deploying/
+          dotnet publish RgsToElectrumServerMiddleware/RgsToElectrumServerMiddleware.fsproj -p:PublishSingleFile=true -r linux-x64 -c Release -o publish --self-contained true
+      - name: Create version.txt file
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          echo "$GITHUB_REF_NAME" > publish/version.txt
+      - name: Archive publish
+        run: |
+          sudo apt install --yes zip
+          cd publish
+          zip -r ../middleware-server-linux-amd64.zip *
+          # is this needed?
+          cd ..
+      - name: Create Release
+        id: create_release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/create-release@v1  
+        with:
+          tag_name: ${{ github.ref }}
+          release_name: Release ${{ github.ref }}
+          body: Backend
+          draft: false
+          prerelease: false
+      - name: Upload Server As Release Asset
+        id: upload-server-asset 
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/upload-release-asset@v1
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./middleware-server-linux-amd64.zip
+          asset_name: middleware-server-linux-amd64.zip
+          asset_content_type: application/zip
