@@ -48,13 +48,13 @@ pub(crate) fn db_connection_config() -> Config {
 	config
 }
 
-pub(crate) fn bitcoin_rest_endpoint() -> HttpEndpoint {
-	let host = env::var("BITCOIN_REST_DOMAIN").unwrap_or("127.0.0.1".to_string());
-	let port = env::var("BITCOIN_REST_PORT")
-		.unwrap_or("8332".to_string())
+pub(crate) fn middleware_rest_endpoint() -> HttpEndpoint {
+	let host = env::var("MIDDLEWARE_REST_DOMAIN").unwrap_or("127.0.0.1".to_string());
+	let port = env::var("MIDDLEWARE_REST_PORT")
+		.unwrap_or("5108".to_string())
 		.parse::<u16>()
-		.expect("BITCOIN_REST_PORT env variable must be a u16.");
-	let path = env::var("BITCOIN_REST_PATH").unwrap_or("/rest/".to_string());
+		.expect("MIDDLEWARE_REST_PORT env variable must be a u16.");
+	let path = env::var("MIDDLEWARE_REST_PATH").unwrap_or("/".to_string());
 	HttpEndpoint::for_host(host).with_port(port).with_path(path)
 }
 

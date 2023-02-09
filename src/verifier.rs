@@ -2,12 +2,10 @@ use std::convert::TryInto;
 use std::sync::Arc;
 use std::sync::Mutex;
 
-use bitcoin::{BlockHash, TxOut};
-use bitcoin::blockdata::block::Block;
-use bitcoin::hashes::Hash;
+use bitcoin::{BlockHash, TxOut, Transaction};
+use bitcoin::consensus::deserialize;
 use lightning::routing::gossip::{NetworkGraph, P2PGossipSync};
 use lightning::routing::utxo::{UtxoFuture, UtxoLookup, UtxoResult, UtxoLookupError};
-use lightning_block_sync::{BlockData, BlockSource};
 use lightning_block_sync::http::BinaryResponse;
 use lightning_block_sync::rest::RestClient;
 
@@ -27,7 +25,7 @@ struct RestBinaryResponse(Vec<u8>);
 impl ChainVerifier {
 	pub(crate) fn new(graph: Arc<NetworkGraph<TestLogger>>, outbound_gossiper: Arc<P2PGossipSync<Arc<NetworkGraph<TestLogger>>, Arc<Self>, TestLogger>>) -> Self {
 		ChainVerifier {
-			rest_client: Arc::new(RestClient::new(config::bitcoin_rest_endpoint()).unwrap()),
+			rest_client: Arc::new(RestClient::new(config::middleware_rest_endpoint()).unwrap()),
 			outbound_gossiper,
 			graph,
 			peer_handler: Mutex::new(None),
@@ -42,34 +40,42 @@ impl ChainVerifier {
 		let transaction_index = ((short_channel_id >> 2 * 8) & 0xffffff) as u32;
 		let output_index = (short_channel_id & 0xffff) as u16;
 
-		let mut block = Self::retrieve_block(client, block_height).await?;
-		if transaction_index as usize >= block.txdata.len() { return Err(UtxoLookupError::UnknownTx); }
-		let mut transaction = block.txdata.swap_remove(transaction_index as usize);
+		let mut transaction = Self::retrieve_tx(client, block_height, transaction_index).await?;
 		if output_index as usize >= transaction.output.len() { return Err(UtxoLookupError::UnknownTx); }
 		Ok(transaction.output.swap_remove(output_index as usize))
 	}
 
-	async fn retrieve_block(client: Arc<RestClient>, block_height: u32) -> Result<Block, UtxoLookupError> {
-		let uri = format!("blockhashbyheight/{}.bin", block_height);
-		let block_hash_result =
+	async fn retrieve_tx(client: Arc<RestClient>, block_height: u32, transaction_index: u32) -> Result<Transaction, UtxoLookupError> {
+		let uri = format!("getTransaction/{}/{}", block_height, transaction_index);
+		let tx_result =
 			client.request_resource::<BinaryResponse, RestBinaryResponse>(&uri).await;
-		let block_hash: Vec<u8> = block_hash_result.map_err(|error| {
-			eprintln!("Could't find block hash at height {}: {}", block_height, error.to_string());
-			UtxoLookupError::UnknownChain
+		let tx_hex_in_bytes: Vec<u8> = tx_result.map_err(|error| {
+			eprintln!("Could't find transaction at height {} and pos {}: {}", block_height, transaction_index, error.to_string());
+			UtxoLookupError::UnknownTx
 		})?.0;
-		let block_hash = BlockHash::from_slice(&block_hash).unwrap();
 
-		let block_result = client.get_block(&block_hash).await;
-		match block_result {
-			Ok(BlockData::FullBlock(block)) => {
-				Ok(block)
-			},
-			Ok(_) => unreachable!(),
-			Err(error) => {
-				eprintln!("Couldn't retrieve block {}: {:?} ({})", block_height, error, block_hash);
-				Err(UtxoLookupError::UnknownChain)
-			}
-		}
+		let tx_hex_in_string =
+			String::from_utf8(tx_hex_in_bytes)
+				.map_err(|non_utf8| String::from_utf8_lossy(non_utf8.as_bytes()).into_owned())
+				.unwrap();
+
+		let tx_bytes =
+			hex::decode(tx_hex_in_string)
+				.map_err(|error| {
+					eprintln!("Could't find transaction at height {} and pos {}: {}", block_height, transaction_index, error.to_string());
+					UtxoLookupError::UnknownTx
+				})
+				.unwrap();
+
+		let transaction =
+			deserialize::<Transaction>(tx_bytes.as_slice())
+				.map_err(|error| {
+					eprintln!("Could't find transaction at height {} and pos {}: {}", block_height, transaction_index, error.to_string());
+					UtxoLookupError::UnknownTx
+				})
+				.unwrap();
+
+		Ok(transaction)
 	}
 }
 
